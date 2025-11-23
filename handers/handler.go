@@ -13,13 +13,21 @@ import (
 )
 
 type CounterService interface {
-	IncrementTotalCounter(ctx context.Context, key string) error
-	ReadMessages(ctx context.Context, key string) error
+	IncrementCounter(ctx context.Context, key string) error
+	DecrementCounter(ctx context.Context, key string) error
+	ReadMessages(ctx context.Context, key string) (int, error)
+	UnreadMessages(ctx context.Context, key string, count int) error
 	GetMessageCounter(ctx context.Context, key string) (*models.MessageCounter, error)
 }
 
 type Handler struct {
 	counterService CounterService
+}
+
+type DefaultResponse struct {
+	Success   bool   `json:"success"`
+	ReadCount int    `json:"read_count,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func NewHandler(counterService CounterService) *Handler {
@@ -48,15 +56,27 @@ func validateBody(msg *models.MessageCounter) error {
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var msg models.MessageCounter
+	var (
+		msg  models.MessageCounter
+		resp DefaultResponse
+	)
+
+	resp.Success = false
+
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
 		return
 	}
 
 	// Validate body
 	if err := validateBody(&msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
 		return
 	}
 
@@ -64,8 +84,55 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	md5Hash := md5.Sum([]byte(msg.FromUserID + msg.ToUserID))
 	md5HashStr := fmt.Sprintf("%x", md5Hash)
 
-	if err := h.counterService.IncrementTotalCounter(ctx, md5HashStr); err != nil {
-		http.Error(w, "Failed to increment counter", http.StatusInternalServerError)
+	if err := h.counterService.IncrementCounter(ctx, md5HashStr); err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(respData)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	resp.Success = true
+	respData, _ := json.Marshal(resp)
+	w.Write(respData)
+}
+
+// POST /decrement
+func (h *Handler) RevertSendMessage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var (
+		msg  models.MessageCounter
+		resp DefaultResponse
+	)
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
+		return
+	}
+
+	// Validate body
+	if err := validateBody(&msg); err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
+		return
+	}
+
+	// Create a consistent key for the user pair
+	md5Hash := md5.Sum([]byte(msg.FromUserID + msg.ToUserID))
+	md5HashStr := fmt.Sprintf("%x", md5Hash)
+
+	if err := h.counterService.DecrementCounter(ctx, md5HashStr); err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(respData)
 		return
 	}
 
@@ -78,15 +145,26 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ReadMessages(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var msg models.MessageCounter
+	var (
+		msg  models.MessageCounter
+		resp DefaultResponse
+	)
+	resp.Success = false
+
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
 		return
 	}
 
 	// Validate body
 	if err := validateBody(&msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
 		return
 	}
 
@@ -94,14 +172,67 @@ func (h *Handler) ReadMessages(w http.ResponseWriter, r *http.Request) {
 	md5Hash := md5.Sum([]byte(msg.FromUserID + msg.ToUserID))
 	md5HashStr := fmt.Sprintf("%x", md5Hash)
 
-	if err := h.counterService.ReadMessages(ctx, md5HashStr); err != nil {
-		http.Error(w, "Failed to read messages", http.StatusInternalServerError)
+	count, err := h.counterService.ReadMessages(ctx, md5HashStr)
+	if err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(respData)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("{\"success\": true}"))
+	w.WriteHeader(http.StatusAccepted)
+	resp.Success = true
+	resp.ReadCount = count
+	respData, _ := json.Marshal(resp)
+	w.Write(respData)
+}
+
+// PATCH unread-messages
+func (h *Handler) UnreadMessages(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var (
+		msg  models.MessageCounter
+		resp DefaultResponse
+	)
+	resp.Success = false
+
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
+		return
+	}
+
+	// Validate body
+	if err := validateBody(&msg); err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(respData)
+		return
+	}
+
+	// Create a consistent key for the user pair
+	md5Hash := md5.Sum([]byte(msg.FromUserID + msg.ToUserID))
+	md5HashStr := fmt.Sprintf("%x", md5Hash)
+
+	if err := h.counterService.UnreadMessages(ctx, md5HashStr, msg.MessageCount); err != nil {
+		resp.Error = err.Error()
+		respData, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(respData)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	resp.Success = true
+	respData, _ := json.Marshal(resp)
+	w.Write(respData)
 }
 
 // GET /unread-count

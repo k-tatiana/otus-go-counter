@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"go-server-counters/models"
 
 	"github.com/redis/go-redis/v9"
@@ -25,7 +26,7 @@ func NewMessageCounter(db RedisClient) *MessageCounter {
 	}
 }
 
-func (mc *MessageCounter) IncrementTotalCounter(ctx context.Context, key string) error {
+func (mc *MessageCounter) IncrementCounter(ctx context.Context, key string) error {
 	val, err := mc.db.Get(ctx, key)
 	if err != nil {
 		if errors.Is(redis.Nil, err) {
@@ -57,10 +58,14 @@ func (mc *MessageCounter) IncrementTotalCounter(ctx context.Context, key string)
 	return nil
 }
 
-func (mc *MessageCounter) ReadMessages(ctx context.Context, key string) error {
+func (mc *MessageCounter) DecrementCounter(ctx context.Context, key string) error {
 	val, err := mc.db.Get(ctx, key)
 	if err != nil {
-		return fmt.Errorf("get data from db: %w", err)
+		if errors.Is(redis.Nil, err) {
+			val = ""
+		} else {
+			return fmt.Errorf("get data from db: %w", err)
+		}
 	}
 
 	var cnt models.MessageCounter
@@ -71,7 +76,73 @@ func (mc *MessageCounter) ReadMessages(ctx context.Context, key string) error {
 		}
 	}
 
+	if cnt.CountTotal > 0 {
+		cnt.CountTotal--
+	}
+	if cnt.CountUnread > 0 {
+		cnt.CountUnread--
+	}
+
+	data, err := json.Marshal(cnt)
+	if err != nil {
+		return fmt.Errorf("marshal data: %w", err)
+	}
+	err = mc.db.Set(ctx, key, string(data))
+	if err != nil {
+		return fmt.Errorf("put data to db: %w", err)
+	}
+
+	return nil
+}
+
+func (mc *MessageCounter) ReadMessages(ctx context.Context, key string) (int, error) {
+	var (
+		readCount int
+		cnt       models.MessageCounter
+	)
+	val, err := mc.db.Get(ctx, key)
+	if err != nil {
+		return 0, fmt.Errorf("get data from db: %w", err)
+	}
+
+	if val != "" {
+		err := json.Unmarshal([]byte(val), &cnt)
+		if err != nil {
+			return 0, fmt.Errorf("unmarshal data: %w", err)
+		}
+	}
+
+	readCount = cnt.CountUnread
 	cnt.CountUnread = 0
+
+	data, err := json.Marshal(cnt)
+	if err != nil {
+		return 0, fmt.Errorf("marshal data: %w", err)
+	}
+	err = mc.db.Set(ctx, key, string(data))
+	if err != nil {
+		return 0, fmt.Errorf("put data to db: %w", err)
+	}
+
+	return readCount, nil
+}
+
+func (mc *MessageCounter) UnreadMessages(ctx context.Context, key string, count int) error {
+	var cnt models.MessageCounter
+
+	val, err := mc.db.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("get data from db: %w", err)
+	}
+
+	if val != "" {
+		err := json.Unmarshal([]byte(val), &cnt)
+		if err != nil {
+			return fmt.Errorf("unmarshal data: %w", err)
+		}
+	}
+	cnt.CountUnread = count
+
 	data, err := json.Marshal(cnt)
 	if err != nil {
 		return fmt.Errorf("marshal data: %w", err)

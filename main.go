@@ -2,6 +2,7 @@ package main
 
 import (
 	"go-server-counters/config"
+	"go-server-counters/server"
 )
 
 func main() {
@@ -10,5 +11,5 @@ func main() {
 		panic(err)
 	}
 
-	runServer(cfg)
+	server.Run(cfg)
 }

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"go-server-counters/transport"
 )
 
-func runServer(cfg *config.Config) {
+func Run(cfg *config.Config) {
 	redisCfg := transport.NewRedisConfig(cfg.RedisAddress, cfg.RedisPassword, cfg.RedisDB)
 	redisTransport := transport.NewRedisTransport(redisCfg)
 
@@ -34,7 +34,11 @@ func runServer(cfg *config.Config) {
 	})
 
 	mux.HandleFunc("/increment", handlers.SendMessage).Methods("POST")
+	mux.HandleFunc("/decrement", handlers.RevertSendMessage).Methods("POST")
+
 	mux.HandleFunc("/read", handlers.ReadMessages).Methods("PATCH")
+	mux.HandleFunc("/unread", handlers.UnreadMessages).Methods("PATCH")
+
 	mux.HandleFunc("/get", handlers.GetMessageCount).Methods("GET")
 
 	// Create server with timeouts
